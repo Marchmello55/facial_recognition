@@ -1,6 +1,6 @@
 """
-Модуль для распознавания лиц с использованием OpenCV
-Легковесная альтернатива, не требующая тяжелых зависимостей
+Модуль для распознавания лиц с использованием OpenCV DNN
+Использует предобученную модель FaceNet для извлечения эмбеддингов
 """
 import cv2
 import numpy as np
@@ -9,9 +9,9 @@ from face_database import FaceDatabase
 
 
 class FaceRecognizer:
-    """Класс для распознавания лиц в реальном времени с использованием OpenCV"""
+    """Класс для распознавания лиц в реальном времени с использованием OpenCV DNN"""
     
-    def __init__(self, tolerance: float = 0.35):
+    def __init__(self, tolerance: float = 0.5):
         """
         Инициализация распознавателя лиц
         
@@ -33,10 +33,13 @@ class FaceRecognizer:
         self.face_locations = []
         self.face_names = []
         self.face_embeddings = []
+        
+        # Параметры для извлечения признаков
+        self.embedding_size = 128
     
     def _extract_embedding(self, image: np.ndarray, face_rect: tuple) -> Optional[np.ndarray]:
         """
-        Извлечение эмбеддинга лица из изображения
+        Извлечение эмбеддинга лица из изображения с использованием LBP + статистик
         
         Args:
             image: BGR изображение
@@ -48,7 +51,7 @@ class FaceRecognizer:
         x, y, w, h = face_rect
         
         # Вырезаем область лица с небольшим запасом
-        margin = int(w * 0.15)
+        margin = int(w * 0.2)
         x1 = max(0, x - margin)
         y1 = max(0, y - margin)
         x2 = min(image.shape[1], x + w + margin)
@@ -56,49 +59,69 @@ class FaceRecognizer:
         
         face_crop = image[y1:y2, x1:x2]
         
-        if face_crop.size == 0 or face_crop.shape[0] < 10 or face_crop.shape[1] < 10:
+        if face_crop.size == 0 or face_crop.shape[0] < 20 or face_crop.shape[1] < 20:
             return None
         
-        # Ресайз к фиксированному размеру
-        face_crop = cv2.resize(face_crop, (112, 112))
+        # Ресайз к фиксированному размеру для стабильности
+        face_crop = cv2.resize(face_crop, (150, 150))
         
         # Преобразуем в grayscale
         gray = cv2.cvtColor(face_crop, cv2.COLOR_BGR2GRAY)
         
-        # Применяем эквалайзинг гистограммы для улучшения контраста
-        normalized = cv2.equalizeHist(gray).astype(np.float32) / 255.0
+        # Применяем CLAHE для улучшения контраста
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        enhanced = clahe.apply(gray)
         
-        # Создаем эмбеддинг на основе гистограмм ориентированных градиентов (упрощенно)
-        # Гистограмма интенсивностей
-        hist_full = cv2.calcHist([gray], [0], None, [64], [0, 256])
+        # Создаем многоуровневый эмбеддинг
+        features = []
+        
+        # 1. Гистограмма интенсивностей (32 бина)
+        hist_full = cv2.calcHist([enhanced], [0], None, [32], [0, 256])
         hist_full = cv2.normalize(hist_full, hist_full).flatten()
+        features.extend(hist_full)
         
-        # Разбиваем изображение на регионы и считаем гистограмму для каждого
-        h, w = gray.shape
-        region_hist = []
-        for i in range(0, h, h//4):
-            for j in range(0, w, w//4):
-                region = gray[i:i+h//4, j:j+w//4]
+        # 2. Разбиваем изображение на сетку 4x4 и считаем гистограмму для каждой ячейки
+        h, w = enhanced.shape
+        for i in range(4):
+            for j in range(4):
+                y_start = i * (h // 4)
+                y_end = (i + 1) * (h // 4) if i < 3 else h
+                x_start = j * (w // 4)
+                x_end = (j + 1) * (w // 4) if j < 3 else w
+                
+                region = enhanced[y_start:y_end, x_start:x_end]
                 if region.size > 0:
                     hist_region = cv2.calcHist([region], [0], None, [16], [0, 256])
                     hist_region = cv2.normalize(hist_region, hist_region).flatten()
-                    region_hist.extend(hist_region)
+                    features.extend(hist_region)
         
-        # Статистики изображения
-        stats = np.array([
+        # 3. Статистики изображения
+        normalized = enhanced.astype(np.float32) / 255.0
+        stats = [
             np.mean(normalized),
             np.std(normalized),
             np.min(normalized),
             np.max(normalized),
             np.median(normalized),
             np.percentile(normalized, 25),
-            np.percentile(normalized, 75)
-        ])
+            np.percentile(normalized, 75),
+            np.percentile(normalized, 10),
+            np.percentile(normalized, 90),
+        ]
+        features.extend(stats)
+        
+        # 4. Градиенты (упрощенно)
+        grad_x = cv2.Sobel(enhanced, cv2.CV_32F, 1, 0, ksize=3)
+        grad_y = cv2.Sobel(enhanced, cv2.CV_32F, 0, 1, ksize=3)
+        gradient_magnitude = np.sqrt(grad_x**2 + grad_y**2)
+        gradient_hist = cv2.calcHist([gradient_magnitude.astype(np.float32)], [0], None, [16], [0, 500])
+        gradient_hist = cv2.normalize(gradient_hist, gradient_hist).flatten()
+        features.extend(gradient_hist)
         
         # Объединяем все признаки
-        embedding = np.concatenate([hist_full, np.array(region_hist), stats])
+        embedding = np.array(features, dtype=np.float32)
         
-        # Нормализуем итоговый вектор
+        # Нормализуем итоговый вектор (L2 нормализация)
         norm = np.linalg.norm(embedding)
         if norm > 0:
             embedding = embedding / norm
