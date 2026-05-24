@@ -170,6 +170,7 @@ def main():
                 recognizer.database.clear_database()
         elif choice == '6':
             print("\nВыход из программы. До свидания!")
+            recognizer.release()
             break
         else:
             print("Неверный выбор. Пожалуйста, выберите от 1 до 6")
