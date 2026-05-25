@@ -72,15 +72,16 @@ class FaceRecognizer:
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         enhanced = clahe.apply(gray)
         
-        # Создаем многоуровневый эмбеддинг
+        # Создаем многоуровневый эмбеддинг на 128 элементов
         features = []
         
-        # 1. Гистограмма интенсивностей (32 бина)
-        hist_full = cv2.calcHist([enhanced], [0], None, [32], [0, 256])
+        # 1. Гистограмма интенсивностей (16 бинов) - 16 элементов
+        hist_full = cv2.calcHist([enhanced], [0], None, [16], [0, 256])
         hist_full = cv2.normalize(hist_full, hist_full).flatten()
         features.extend(hist_full)
         
-        # 2. Разбиваем изображение на сетку 4x4 и считаем гистограмму для каждой ячейки
+        # 2. Разбиваем изображение на сетку 4x4 и считаем гистограмму для каждой ячейки (4 бина)
+        # 4*4*4 = 64 элемента
         h, w = enhanced.shape
         for i in range(4):
             for j in range(4):
@@ -91,11 +92,11 @@ class FaceRecognizer:
                 
                 region = enhanced[y_start:y_end, x_start:x_end]
                 if region.size > 0:
-                    hist_region = cv2.calcHist([region], [0], None, [16], [0, 256])
+                    hist_region = cv2.calcHist([region], [0], None, [4], [0, 256])
                     hist_region = cv2.normalize(hist_region, hist_region).flatten()
                     features.extend(hist_region)
         
-        # 3. Статистики изображения
+        # 3. Статистики изображения - 8 элементов
         normalized = enhanced.astype(np.float32) / 255.0
         stats = [
             np.mean(normalized),
@@ -105,21 +106,34 @@ class FaceRecognizer:
             np.median(normalized),
             np.percentile(normalized, 25),
             np.percentile(normalized, 75),
-            np.percentile(normalized, 10),
             np.percentile(normalized, 90),
         ]
         features.extend(stats)
         
-        # 4. Градиенты (упрощенно)
+        # 4. Градиенты (упрощенно) - 40 элементов
         grad_x = cv2.Sobel(enhanced, cv2.CV_32F, 1, 0, ksize=3)
         grad_y = cv2.Sobel(enhanced, cv2.CV_32F, 0, 1, ksize=3)
         gradient_magnitude = np.sqrt(grad_x**2 + grad_y**2)
-        gradient_hist = cv2.calcHist([gradient_magnitude.astype(np.float32)], [0], None, [16], [0, 500])
-        gradient_hist = cv2.normalize(gradient_hist, gradient_hist).flatten()
-        features.extend(gradient_hist)
+        
+        # Считаем гистограмму градиентов по зонам (5 зон x 8 бинов = 40 элементов)
+        gh, gw = gradient_magnitude.shape
+        for i in range(5):
+            z_start = i * (gh // 5)
+            z_end = (i + 1) * (gh // 5) if i < 4 else gh
+            zone = gradient_magnitude[z_start:z_end, :]
+            if zone.size > 0:
+                grad_hist = cv2.calcHist([zone.astype(np.float32)], [0], None, [8], [0, 500])
+                grad_hist = cv2.normalize(grad_hist, grad_hist).flatten()
+                features.extend(grad_hist)
+        
+        # Итого: 16 + 64 + 8 + 40 = 128 элементов
         
         # Объединяем все признаки
         embedding = np.array(features, dtype=np.float32)
+        
+        # Проверяем размерность
+        if len(embedding) != 128:
+            print(f"Предупреждение: размер вектора {len(embedding)}, ожидается 128")
         
         # Нормализуем итоговый вектор (L2 нормализация)
         norm = np.linalg.norm(embedding)
