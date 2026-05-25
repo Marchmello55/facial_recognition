@@ -1,7 +1,8 @@
 """
-Модуль для работы с базой данных лиц
-Хранит энкодинги лиц и имена пользователей
+Модуль для работы с базой данных лиц на SQLite
+Хранит энкодинги лиц и имена пользователей в SQL базе данных
 """
+import sqlite3
 import pickle
 import os
 from typing import List, Tuple, Optional
@@ -9,65 +10,85 @@ import numpy as np
 
 
 class FaceDatabase:
-    """Класс для управления базой данных лиц"""
+    """Класс для управления базой данных лиц на SQLite"""
     
-    def __init__(self, db_path: str = "face_database.pkl"):
+    def __init__(self, db_path: str = "faces.db"):
         """
-        Инициализация базы данных
+        Инициализация базы данных SQLite
         
         Args:
-            db_path: Путь к файлу базы данных
+            db_path: Путь к файлу базы данных SQLite
         """
         self.db_path = db_path
-        self.known_faces: List[np.ndarray] = []  # Энкодинги известных лиц
-        self.known_names: List[str] = []  # Имена соответствующих лиц
-        self.load()
+        self.known_faces: List[np.ndarray] = []  # Энкодинги известных лиц (кэш)
+        self.known_names: List[str] = []  # Имена соответствующих лиц (кэш)
+        self._init_db()
+        self._load_to_cache()
+    
+    def _init_db(self):
+        """Инициализация таблицы в базе данных SQLite"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        # Создание таблицы faces
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS faces (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL,
+                encoding BLOB NOT NULL,
+                image_data BLOB,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        conn.commit()
+        conn.close()
+        print(f"База данных SQLite инициализирована: {self.db_path}")
+    
+    def _load_to_cache(self):
+        """Загрузка данных из SQLite в кэш памяти"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT name, encoding FROM faces')
+        rows = cursor.fetchall()
+        
+        self.known_names = []
+        self.known_faces = []
+        
+        for name, encoding_blob in rows:
+            try:
+                encoding = pickle.loads(encoding_blob)
+                self.known_names.append(name)
+                self.known_faces.append(encoding)
+            except Exception as e:
+                print(f"Ошибка загрузки эмбеддинга для {name}: {e}")
+        
+        conn.close()
+        print(f"Загружено {len(self.known_names)} лиц из базы данных в кэш")
     
     def load(self) -> bool:
         """
-        Загрузка базы данных из файла
+        Загрузка базы данных (для совместимости интерфейса)
         
         Returns:
-            True если загрузка успешна, False если файл не существует
+            True если загрузка успешна
         """
-        if os.path.exists(self.db_path):
-            try:
-                with open(self.db_path, 'rb') as f:
-                    data = pickle.load(f)
-                    self.known_faces = data.get('faces', [])
-                    self.known_names = data.get('names', [])
-                print(f"База данных загружена: {len(self.known_names)} лиц")
-                return True
-            except Exception as e:
-                print(f"Ошибка загрузки базы данных: {e}")
-                return False
-        else:
-            print("База данных не найдена, создана новая")
-            return False
+        self._load_to_cache()
+        return True
     
     def save(self) -> bool:
         """
-        Сохранение базы данных в файл
+        Сохранение базы данных (для совместимости интерфейса)
         
         Returns:
             True если сохранение успешно
         """
-        try:
-            with open(self.db_path, 'wb') as f:
-                data = {
-                    'faces': self.known_faces,
-                    'names': self.known_names
-                }
-                pickle.dump(data, f)
-            print(f"База данных сохранена: {len(self.known_names)} лиц")
-            return True
-        except Exception as e:
-            print(f"Ошибка сохранения базы данных: {e}")
-            return False
+        return True
     
     def add_face(self, encoding: np.ndarray, name: str) -> bool:
         """
-        Добавление нового лица в базу
+        Добавление нового лица в базу SQLite
         
         Args:
             encoding: Энкодинг лица (вектор признаков)
@@ -84,11 +105,30 @@ class FaceDatabase:
             print("Ошибка: пустое имя")
             return False
         
-        self.known_faces.append(encoding)
-        self.known_names.append(name.strip())
-        self.save()
-        print(f"Добавлено лицо: {name}")
-        return True
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Сериализуем эмбеддинг в байты
+            encoding_blob = pickle.dumps(encoding)
+            
+            # Вставляем или обновляем запись
+            cursor.execute('''
+                INSERT OR REPLACE INTO faces (name, encoding)
+                VALUES (?, ?)
+            ''', (name.strip(), encoding_blob))
+            
+            conn.commit()
+            conn.close()
+            
+            # Обновляем кэш
+            self._load_to_cache()
+            
+            print(f"Добавлено лицо в SQLite: {name}")
+            return True
+        except Exception as e:
+            print(f"Ошибка при добавлении лица в SQLite: {e}")
+            return False
     
     def remove_face(self, name: str) -> bool:
         """
@@ -100,15 +140,27 @@ class FaceDatabase:
         Returns:
             True если удаление успешно
         """
-        if name in self.known_names:
-            index = self.known_names.index(name)
-            self.known_names.pop(index)
-            self.known_faces.pop(index)
-            self.save()
-            print(f"Удалено лицо: {name}")
-            return True
-        else:
-            print(f"Лицо '{name}' не найдено в базе")
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('DELETE FROM faces WHERE name = ?', (name,))
+            
+            if cursor.rowcount > 0:
+                conn.commit()
+                conn.close()
+                
+                # Обновляем кэш
+                self._load_to_cache()
+                
+                print(f"Удалено лицо из SQLite: {name}")
+                return True
+            else:
+                conn.close()
+                print(f"Лицо '{name}' не найдено в базе SQLite")
+                return False
+        except Exception as e:
+            print(f"Ошибка при удалении лица: {e}")
             return False
     
     def get_all_names(self) -> List[str]:
@@ -121,13 +173,25 @@ class FaceDatabase:
     
     def clear_database(self) -> bool:
         """
-        Очистка всей базы данных
+        Очистка всей базы данных SQLite
         
         Returns:
             True если очистка успешна
         """
-        self.known_faces = []
-        self.known_names = []
-        self.save()
-        print("База данных очищена")
-        return True
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('DELETE FROM faces')
+            
+            conn.commit()
+            conn.close()
+            
+            # Обновляем кэш
+            self._load_to_cache()
+            
+            print("База данных SQLite очищена")
+            return True
+        except Exception as e:
+            print(f"Ошибка при очистке базы данных: {e}")
+            return False
