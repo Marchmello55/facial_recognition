@@ -314,9 +314,10 @@ class FaceRecognizer:
             # Рисуем прямоугольник для имени
             cv2.rectangle(frame, (x1, y2 - 35), (x2, y2), color, cv2.FILLED)
             
-            # Пишем имя
+            # Пишем имя или "Неизвестный пользователь"
             font = cv2.FONT_HERSHEY_DUPLEX
-            cv2.putText(frame, name, (x1 + 6, y2 - 6), font, 0.7, (255, 255, 255), 1)
+            display_name = name if name != "Unknown" else "Неизвестный"
+            cv2.putText(frame, display_name, (x1 + 6, y2 - 6), font, 0.7, (255, 255, 255), 1)
         
         return frame
     

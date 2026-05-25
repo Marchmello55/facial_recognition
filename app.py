@@ -241,6 +241,29 @@ class FaceRecognitionApp:
             2
         )
         
+        # Вывод статуса распознавания в статус бар
+        if face_names:
+            recognized_users = []
+            unknown_count = 0
+            for name in face_names:
+                if name != "Unknown":
+                    recognized_users.append(name)
+                else:
+                    unknown_count += 1
+            
+            if recognized_users:
+                status_text = f"Распознаны: {', '.join(recognized_users)}"
+                if unknown_count > 0:
+                    status_text += f" | Неизвестных: {unknown_count}"
+            elif unknown_count > 0:
+                status_text = f"Неизвестный пользователь ({unknown_count})"
+            else:
+                status_text = "Лица обнаружены, но не распознаны"
+            
+            self.status_label.config(text=status_text)
+        else:
+            self.status_label.config(text="Лица не обнаружены")
+        
         # Конвертация BGR в RGB для отображения в tkinter
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         
